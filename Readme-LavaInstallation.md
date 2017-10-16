@@ -130,14 +130,20 @@ Make sure you have WinRM https enabled. You can use this script to enable WinRM:
 https://github.com/ader1990/configs/blob/master/configure-winrm-http-https.ps1
 ```
 
+To verify if WinRM https is working:
+```powershell
+$sessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+New-PSSession -ComputerName "<Windows-Slave-IP>" -Authentication Basic -Credential $mycreds -SessionOption $sessionoption -UseSSL|Enter-PSSession
+```
+
 Make sure you have downloaded the mkisofs.exe from https://github.com/ader1990/configs/blob/master/mkisofs.exe .
 
 Make sure you have the latest lis pipeline scripts:
 
 ```powershell
-git clone https://github.com/ader1990/lis-pipeline
+git clone https://github.com/papagalu/lis-pipeline
 cd lis-pipeline
-git checkout dirty_winrm
+git checkout clean
 ```
 
 Remember the paths where you have downloaded the mkisofs.exe and lis-pipeline scripts,
@@ -150,13 +156,55 @@ Get the Python sources:
 apt-get -y install python-pip
 pip install pywinrm
 
-git clone https://github.com/ader1990/lava-dispatcher
+git clone https://github.com/papagalu/lava-dispatcher
 
 cd lava-dispatcher
-git checkout hyperv_booting_method
+git checkout small_changes
 
 python setup.py install
 service lava-slave restart
+```
+
+Create in the directory /lava-dispatcher the file ssh.sh:
+```bash
+#!/bin/bash
+
+exec_with_retry2 () {
+    MAX_RETRIES=$1
+    INTERVAL=$2
+
+    COUNTER=0
+    while [ $COUNTER -lt $MAX_RETRIES ]; do
+        EXIT=0
+        eval '${@:3}' || EXIT=$?
+        if [ $EXIT -eq 0 ]; then
+            return 0
+        fi
+        let COUNTER=COUNTER+1
+
+        if [ -n "$INTERVAL" ]; then
+            sleep $INTERVAL
+        fi
+    done
+    return $EXIT
+}
+
+exec_with_retry () {
+    CMD=$1
+    MAX_RETRIES=${2-10}
+    INTERVAL=${3-0}
+
+    exec_with_retry2 $MAX_RETRIES $INTERVAL $CMD
+}
+
+
+
+exec_with_retry2 5 20 ssh "$@"
+
+``` 
+Change the rights to this file:
+```bash
+chmod +x ssh.sh
 ```
 
 Create a Hyper-V device dictionary file at this path on the LAVA Master:
@@ -186,6 +234,7 @@ actions:
             shared_storage_path: '\\shared\storage\path'
             mkisofs_path: 'C:\bin\mkisofs.exe'
             lis_pipeline_scripts_path: 'C:\lis-pipeline\scripts\lis_hyperv_platform\'
+            secrets: 'path\to\file\secrets.ps1'
             winrm:
               user: "hyper-v-host-username"
               password: "hyper-v-host-user-password"
@@ -194,6 +243,11 @@ actions:
 
 ```
 
+Create a file into your host machine with the name ```secrets.ps1``` that contains:
+```
+$user = "Windows-user-name"
+$password = "Windows-password"
+```
 Make sure you replace the hyperv parameters options with your specific data.
 
 Update your worker dictionary:
@@ -201,7 +255,7 @@ Update your worker dictionary:
 ```bash
 lava-server manage add-device-type hyperv
 echo "{% extends 'hyperv.jinja2' %}" > hyperv_dictionary
-lava-server manage device-dictionary --hostname $WORKER_HOSTNAME --import ./hyperv_dictionary
+lava-server manage device-dictionary --hostname `hostname -f` --import ./hyperv_dictionary
 ```
 
 Install and configure the SMB share:
@@ -224,12 +278,20 @@ cat <<EOT >> /etc/samba/smb.conf
    guest ok = yes
 EOT
 service smbd restart
+```
+To verify if the SMB share is working:
+```bash
 mount //$(hostname)/lava /var/lib/lava/dispatcher/tmp
 # press Enter (as there is an empty password)
 ```
 
+
+
 ### Run instructions
 To be added
+* Go to http://<LAVA-IP>/ and login with the superuser credentials
+* Go to http://<LAVA-IP>/scheduler/jobsubmit and use http://paste.ubuntu.com/25719905 
+  as an example job definition and press ```Submit``` .
 
 ## LAVA Slave on Windows (Obsolete)
 
