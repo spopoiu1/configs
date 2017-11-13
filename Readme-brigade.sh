@@ -1,110 +1,116 @@
 #!/bin/bash
-
+#this script should be run as a non root user
 # install docker:
 
-apt-get update
-apt-get install -qy docker.io
+sudo apt-get update
+sudo apt-get install -y docker.io
 
 # configure kubernetes apt repo:
 
-apt-get install -y apt-transport-https
-curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
-apt-get update
+sudo apt-get install -y apt-transport-https
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+sudo touch /etc/apt/sources.list.d/kubernetes.list
+sudo chmod 777 /etc/apt/sources.list.d/kubernetes.list
+sudo echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
 
 # install kubernetes:
 
-apt-get install -y kubelet kubeadm kubernetes-cni
+sudo apt-get install -y kubelet kubeadm kubernetes-cni
 
 # disable swap if exists (check: cat /proc/swaps)
 
 swapoff -a
-sed -i '/ swap / s/^/#/' /etc/fstab
+sudo sed -i '/ swap / s/^/#/' /etc/fstab
 
 # initiate kubeadm (replace --apiserver-advertise-address with the IP of your host):
 
-kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=$(ifconfig eth0 | grep 'inet addr:' | cut -d ':' -f2 | cut -d ' ' -f1)
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=$(ifconfig eth0 | grep 'inet addr:' | cut -d ':' -f2 | cut -d ' ' -f1)
 
-# configure unprivileged user:
+# configure environment variables:
 
-useradd packet -G sudo -m -s /bin/bash
-echo "packet:NEWPASSWORD" | chpasswd
-su packet
+sudo cp /etc/kubernetes/admin.conf $HOME/
+sudo chown $(id -u):$(id -g) $HOME/admin.conf
+export KUBECONFIG=$HOME/admin.conf
+echo "export KUBECONFIG=$HOME/admin.conf" | tee -a ~/.bashrc
 
-    # configure environment variables:
+# configure pod network:
 
-    sudo cp /etc/kubernetes/admin.conf $HOME/
-    sudo chown $(id -u):$(id -g) $HOME/admin.conf
-    export KUBECONFIG=$HOME/admin.conf
-    echo "export KUBECONFIG=$HOME/admin.conf" | tee -a ~/.bashrc
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/k8s-manifests/kube-flannel-rbac.yml
 
-    # configure pod network:
+# taint master (so that containers can run on master):
 
-    kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
-    kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/k8s-manifests/kube-flannel-rbac.yml
+kubectl taint nodes --all node-role.kubernetes.io/master-
 
-    # taint master (so that containers can run on master):
+# install helm:
+# download desired version from https://github.com/kubernetes/helm/releases:
 
-    kubectl taint nodes --all node-role.kubernetes.io/master-
+wget https://storage.googleapis.com/kubernetes-helm/helm-v2.7.0-linux-amd64.tar.gz
+tar -zxf helm-v2.7.0-linux-amd64.tar.gz
 
-    # install helm:
-    # download desired version from https://github.com/kubernetes/helm/releases:
+# copy binaries into PATH:
 
-    wget https://storage.googleapis.com/kubernetes-helm/helm-v2.7.0-linux-amd64.tar.gz
-    tar xf helm-v2.7.0-linux-amd64.tar.gz
+sudo cp linux-amd64/helm /usr/bin/
 
-    # copy binaries into PATH:
+# initiate helm:
 
-    sudo cp linux-amd64/helm /usr/bin/
+helm init
 
-    # initiate helm:
+# create the binaries for brigade
 
-    helm init
+sudo apt-get update
+sudo apt-get -y upgrade
+wget https://storage.googleapis.com/golang/go1.9.2.linux-amd64.tar.gz
+tar -xvf go1.9.2.linux-amd64.tar.gz
+sudo mv go /usr/local
+export GOROOT=/usr/local/go
+echo "export GOROOT=/usr/local/go" | tee -a ~/.bashrc
+mkdir $HOME/work
+sudo cp -r /usr/local/go $HOME/work
+export GOPATH=$HOME/work
+echo "export GOPATH=$HOME/work" | tee -a ~/.bashrc
+export PATH=$GOPATH/bin:$GOPATH/go/bin:$GOROOT/bin:$PATH
+mkdir -p $(go env GOPATH)/src/github.com/Azure 
+git clone https://github.com/Azure/brigade $(go env GOPATH)/src/github.com/Azure/brigade
+pushd $(go env GOPATH)/src/github.com/Azure/brigade
+sudo apt install -y npm
+sudo apt install -y fakeroot
+last_error=$?
+if [[ $last_error == "1" ]];then
+fakeroot make bootstrap build
+fi
+sudo cp $HOME/work/src/github.com/Azure/brigade/bin/* /usr/bin
+popd 
+# install brigade:
+# clone the repo:
 
-    # create the binaries for brigade
+git clone https://github.com/Azure/brigade.git
+pushd ./brigade
 
-    sudo apt-get update
-    sudo apt-get -y upgrade
-    wget https://storage.googleapis.com/golang/go1.9.2.linux-amd64.tar.gz
-    tar -xvf go1.9.2.linux-amd64.tar.gz
-    sudo mv go /usr/local
-    export GOROOT=/usr/local/go
-    mkdir $HOME/work
-    sudo cp -r /usr/local/go $HOME/work
-    export GOPATH=$HOME/work
-    export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
-    mkdir -p $(go env GOPATH)/src/github.com/Azure 
-    git clone https://github.com/Azure/brigade $(go env GOPATH)/src/github.com/Azure/brigade
-    pushd $(go env GOPATH)/src/github.com/Azure/brigade
-    apt install -y npm
-    apt install -y fakeroot
-    fakeroot make bootstrap build
-    cp /root/work/src/github.com/Azure/brigade/bin/* /usr/bin
+# install brigade:
 
-    # install brigade:
-    # clone the repo:
+kubectl create clusterrolebinding --user system:serviceaccount:kube-system:default kube-system-cluster-admin --clusterrole cluster-admin
+kubectl create clusterrolebinding --user system:serviceaccount:default:brigade-brigade-ctrl kube-system-cluster-admin1 --clusterrole cluster-admin
+kubectl create clusterrolebinding --user system:serviceaccount:default:brigade-brigade-ctrl kube-system-cluster-admin11 --clusterrole cluster-admin
+kubectl create clusterrolebinding --user system:serviceaccount:default:default kube-system-cluster-admin111 --clusterrole cluster-admin
 
-     git clone https://github.com/Azure/brigade.git
-    cd ./brigade
+helm install --name brigade ./chart/brigade
+# create a test project:
 
-    # install brigade:
+helm inspect values ./chart/brigade-project > myvalues.yaml
+# edit myvalues.yaml
+helm install --name my-project ./chart/brigade-project -f myvalues.yaml
+cat << EOF > brigade.js
+const { events } = require('brigadier')
 
-    kubectl create clusterrolebinding --user system:serviceaccount:kube-system:default kube-system-cluster-admin --clusterrole cluster-admin
-    helm install --name brigade ./chart/brigade
+events.on("exec", (brigadeEvent, project) => {
+   console.log("Hello world!")
+ })
+EOF
 
-    # create a test project:
-
-    helm inspect values ./brigade-project > myvalues.yaml
-    # edit myvalues.yaml
-    helm install --name my-project ./brigade-project -f myvalues.yaml
-    cat << EOF > brigade.js
-    const { events } = require('brigadier')
-
-    events.on("exec", (brigadeEvent, project) => {
-      console.log("Hello world!")
-    })
-    EOF
-
-    # run the test project:
-
-    ./brig run -f brigade.js my-project
+# run the test project:
+brig project list
+$PROJECTNAME=
+brig run -f brigade.js  $PROJECTNAME
+popd
